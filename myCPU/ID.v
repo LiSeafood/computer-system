@@ -2,18 +2,17 @@
 module ID(
     input wire clk,
     input wire rst,
-    // input wire flush,
     input wire [`StallBus-1:0] stall,
     
     output wire stallreq,
 
-    input wire [`IF_TO_ID_WD-1:0] if_to_id_bus,//IF段传给ID段的数据
+    input wire [`IF_TO_ID_WD-1:0] if_to_id_bus,//IF段传给ID段的数据，相当于IF_ID中间段模块
 
     input wire [31:0] inst_sram_rdata,//上一步中IF取到的指令
 
     input wire [`WB_TO_RF_WD-1:0] wb_to_rf_bus,//WB段传给ID段的数据
 
-    output wire [`ID_TO_EX_WD-1:0] id_to_ex_bus,//ID段要传给EX段的数据
+    output wire [`ID_TO_EX_WD-1:0] id_to_ex_bus,//ID段要传给EX段的数据，相当于ID_EX中间段
 
     output wire [`BR_WD-1:0] br_bus //跳转指令，传给IF段的
 );
@@ -22,37 +21,33 @@ module ID(
     wire [31:0] inst;
     wire [31:0] id_pc;
     wire ce;
-
+    //WB段回传数据
     wire wb_rf_we;
     wire [4:0] wb_rf_waddr;
     wire [31:0] wb_rf_wdata;
 
-    always @ (posedge clk) begin
+    always @ (posedge clk) begin//这一块实际上起到IF_ID模块的作用
         if (rst) begin
             if_to_id_bus_r <= `IF_TO_ID_WD'b0;        
-        end
-        // else if (flush) begin
-        //     ic_to_id_bus <= `IC_TO_ID_WD'b0;
-        // end
-        else if (stall[1]==`Stop && stall[2]==`NoStop) begin
-            if_to_id_bus_r <= `IF_TO_ID_WD'b0;
-        end//如果复位或者暂停的话就不要IF段传过来的数据了
-        else if (stall[1]==`NoStop) begin
+        end else if (stall[1]==`Stop && stall[2]==`NoStop) begin
+            if_to_id_bus_r <= `IF_TO_ID_WD'b0;//如果复位或者暂停的话就不要IF段传过来的数据了
+        end else if (stall[1]==`NoStop) begin
             if_to_id_bus_r <= if_to_id_bus;
         end
     end
-    //inst就是上一步中IF取到的指令
-    assign inst = inst_sram_rdata;
-    assign {
+    
+    assign inst = inst_sram_rdata;//inst就是上一步中IF取到的32位指令
+    assign {//把IF_ID块解包
         ce,
         id_pc
     } = if_to_id_bus_r;
-    assign {
+    assign {//把WB段回传数据解包
         wb_rf_we,
         wb_rf_waddr,
         wb_rf_wdata
     } = wb_to_rf_bus;
-
+    
+    //分解IF段取到的指令inst，划分为以下片段
     wire [5:0] opcode;
     wire [4:0] rs,rt,rd,sa;
     wire [5:0] func;
@@ -62,9 +57,18 @@ module ID(
     wire [4:0] base;
     wire [15:0] offset;
     wire [2:0] sel;
-
-    wire [63:0] op_d, func_d;
-    wire [31:0] rs_d, rt_d, rd_d, sa_d;
+    assign opcode =       inst[31:26];
+    assign rs =           inst[25:21];
+    assign rt =           inst[20:16];
+    assign rd =           inst[15:11];
+    assign sa =           inst[10:6];
+    assign func =         inst[5:0];
+    assign imm =          inst[15:0];//立即数
+    assign instr_index =  inst[25:0];
+    assign code =         inst[25:6];
+    assign base =         inst[25:21];
+    assign offset =       inst[15:0];
+    assign sel =          inst[2:0];
 
     wire [2:0] sel_alu_src1;
     wire [3:0] sel_alu_src2;
@@ -80,37 +84,26 @@ module ID(
 
     wire [31:0] rdata1, rdata2;
 
-    regfile u_regfile(//对寄存器操作，见regfile.v
+    regfile u_regfile(//对寄存器操作
     	.clk    (clk    ),
+        .re1    (),//寄存器1是否可读
         .raddr1 (rs ),//读取的第一个寄存器rs
         .rdata1 (rdata1 ),//rs中读出来的数据
+        .re2    (),//寄存器2是否可读
         .raddr2 (rt ),//读取的第二个寄存器rt
         .rdata2 (rdata2 ),//rt中读出来的数据
-        .we     (wb_rf_we     ),//是否能写入寄存器的信号
+        .we     (wb_rf_we     ),//是否能写入寄存器
         .waddr  (wb_rf_waddr  ),//写入的寄存器地址
         .wdata  (wb_rf_wdata  )//写入的内容
     );
-
-    //分解IF段取到的指令inst，划分为以下片段
-    assign opcode = inst[31:26];
-    assign rs = inst[25:21];
-    assign rt = inst[20:16];
-    assign rd = inst[15:11];
-    assign sa = inst[10:6];
-    assign func = inst[5:0];
-    assign imm = inst[15:0];
-    assign instr_index = inst[25:0];
-    assign code = inst[25:6];
-    assign base = inst[25:21];
-    assign offset = inst[15:0];
-    assign sel = inst[2:0];
 
     wire inst_ori, inst_lui, inst_addiu, inst_beq;
 
     wire op_add, op_sub, op_slt, op_sltu;
     wire op_and, op_nor, op_or, op_xor;
     wire op_sll, op_srl, op_sra, op_lui;
-
+    
+    wire [63:0] op_d, func_d;
     decoder_6_64 u0_decoder_6_64(
     	.in  (opcode  ),
         .out (op_d )
@@ -121,6 +114,7 @@ module ID(
         .out (func_d )
     );
     
+    wire [31:0] rs_d, rt_d, rd_d, sa_d;
     decoder_5_32 u0_decoder_5_32(
     	.in  (rs  ),
         .out (rs_d )
@@ -160,8 +154,6 @@ module ID(
 
     // imm_zero_extend to reg2
     assign sel_alu_src2[3] = inst_ori;
-
-
 
     assign op_add = inst_addiu;
     assign op_sub = 1'b0;
